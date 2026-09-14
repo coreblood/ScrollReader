@@ -1,6 +1,6 @@
 # ScrollReader — Manual
 
-**Version:** 1.2.2 · **Client:** WotLK 3.3.5a · **Server:** Uncapped
+**Version:** 1.2.3 · **Client:** WotLK 3.3.5a · **Server:** Uncapped
 
 ## What it does
 
@@ -17,18 +17,17 @@ Client addons cannot loop item uses (each use of a spell-casting item requires i
 
 ## The bar (new in 1.2.0)
 
-A draggable horizontal bar of **six buttons**, one per scroll type, each showing the item's icon and a live **count badge** of how many you hold. Press a button — or its keybind — to bulk-read that type. Empty types render greyed. Drag anywhere on the bar (or its buttons) to move it; position is remembered.
+A draggable horizontal bar of **six buttons**, one per scroll type, each showing the item's icon and a live **count badge** of how many you hold. Press a button — or its keybind — to bulk-read that type instantly (no confirmation). Empty types render greyed. Drag anywhere on the bar (or its buttons) to move it; position is remembered.
 
 ### Keybinds
 
-Each of the six buttons can be bound to a key: **ESC → Key Bindings → scroll to the "ScrollReader" section** ("Read all: Scroll of Mastery" etc.). A button's tooltip shows its current binding. Keybinds go through the same confirmation dialog as clicks.
+Each of the six buttons can be bound to a key: **ESC → Key Bindings → scroll to the "ScrollReader" section** ("Read all: Scroll of Mastery" etc.). A button's tooltip shows its current binding. Keybinds act exactly like clicks — immediately.
 
 ## Flow (every trigger)
 
-1. Press a bar button / its keybind (one type), or a master button / `/sr` (all six types at once).
-2. A **confirmation dialog** quotes exactly what will be read — the scrolls are destroyed with no undo, so nothing is sent until you accept.
-3. One `SCRALL:<entry>` request per type goes out (spaced ~1.2s when several are queued).
-4. The server's `SCRDONE` reply reports spent/remaining; a chat line summarizes it. When the **Uncapped Dashboard** is loaded, its `[Scrolls]` line appears instead (ScrollReader stays quiet to avoid duplicates).
+1. Press a bar button / its keybind (one type), or the minimap button / `/sr` (all six types at once).
+2. One `SCRALL:<entry>` request per type goes out **immediately — no confirmation dialog** (removed in 1.2.3 by owner choice; the scrolls are destroyed with no undo, so treat keybinds with respect).
+3. The server's `SCRDONE` reply reports spent/remaining; a chat line summarizes it. When the **Uncapped Dashboard** is loaded, its `[Scrolls]` line appears instead (ScrollReader stays quiet to avoid duplicates).
 
 Item entries are resolved live from your bag links by exact title — you can only bulk what you hold, so bags are always a sufficient source of the ID.
 
@@ -40,7 +39,7 @@ Reads **all six types at once** under a single confirmation. Free-form left-drag
 
 | Command | Effect |
 |---|---|
-| `/sr` or `/scrollread` | Read ALL six types at once (asks first) |
+| `/sr` or `/scrollread` | Read ALL six types at once |
 | `/sr count` | Held counts per type, with item entry IDs |
 | `/sr bar` | Show/hide the six-button bar |
 | `/sr minimap` | Show/hide the minimap button |
@@ -50,7 +49,7 @@ Reads **all six types at once** under a single confirmation. Free-form left-drag
 
 - **Combat:** everything greys out and presses (clicks and keybinds) do nothing while in combat.
 - **Server whitelist:** all six types are bulk-whitelisted server-side as of 2026-09-14 (Wildcard Transmog Scroll = entry 500201, Sealed Traveler's Map = 500200). The server still accepts or rejects each entry independently; a rejection answers "none could be used" plus a server explanation line.
-- **Maps ([#1350] server rules):** consumed at most **500 per server call**, they require **every eligible flight path known** first, each keeps its normal socket-scroll chance, and they are consumed even when they award nothing. When you confirm more than 500, ScrollReader **auto-repeats the call** until your bags are empty of them (the confirmation covered the full count), then prints one summary line — e.g. "read 1398 Sealed Traveler's Map over 3 calls." The repeat loop watches your bags, not the server's remaining count, so copies in your bank can't spin it.
+- **Maps ([#1350] server rules):** consumed at most **500 per server call**, they require **every eligible flight path known** first, each keeps its normal socket-scroll chance, and they are consumed even when they award nothing. When you hold more than 500, ScrollReader **auto-repeats the call** until your bags are empty of them, then prints one summary line — e.g. "read 1398 Sealed Traveler's Map over 3 calls." The repeat loop watches your bags, not the server's remaining count, so copies in your bank can't spin it.
 - **Combat pauses the queue:** requests waiting to be sent (including auto-repeat calls) hold while you're in combat and resume when it ends.
 - **Counts are descriptions, not instructions:** the server consumes what is actually in your bags at execution time; `SCRDONE` reports what really happened.
 - **Matching is exact and case-sensitive** — variant titles are ignored by design.
