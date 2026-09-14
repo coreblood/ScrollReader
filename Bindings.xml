@@ -1,0 +1,20 @@
+<Bindings>
+    <Binding name="SCROLLREADER_BULK1" header="SCROLLREADER">
+        ScrollReader_BulkByIndex(1)
+    </Binding>
+    <Binding name="SCROLLREADER_BULK2">
+        ScrollReader_BulkByIndex(2)
+    </Binding>
+    <Binding name="SCROLLREADER_BULK3">
+        ScrollReader_BulkByIndex(3)
+    </Binding>
+    <Binding name="SCROLLREADER_BULK4">
+        ScrollReader_BulkByIndex(4)
+    </Binding>
+    <Binding name="SCROLLREADER_BULK5">
+        ScrollReader_BulkByIndex(5)
+    </Binding>
+    <Binding name="SCROLLREADER_BULK6">
+        ScrollReader_BulkByIndex(6)
+    </Binding>
+</Bindings>
