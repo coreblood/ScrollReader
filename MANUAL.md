@@ -1,6 +1,6 @@
 # ScrollReader — Manual
 
-**Version:** 1.2.1 · **Client:** WotLK 3.3.5a · **Server:** Uncapped
+**Version:** 1.2.2 · **Client:** WotLK 3.3.5a · **Server:** Uncapped
 
 ## What it does
 
@@ -32,14 +32,9 @@ Each of the six buttons can be bound to a key: **ESC → Key Bindings → scroll
 
 Item entries are resolved live from your bag links by exact title — you can only bulk what you hold, so bags are always a sufficient source of the ID.
 
-## Master buttons
+## Minimap button
 
-Unchanged from 1.1.0, but now covering **all six types at once**:
-
-- **Minimap button** — free-form left-drag placement (exact position, no ring snapping; safe with scaled minimaps).
-- **On-screen button** — standalone 36×36 icon, draggable, position remembered.
-
-Both carry a badge with the grand total held across all six types.
+Reads **all six types at once** under a single confirmation. Free-form left-drag placement (exact position, no ring snapping; safe with scaled minimaps), with a badge showing the grand total held. *(The separate on-screen master button was removed in 1.2.2 — the bar and the minimap button cover both workflows.)*
 
 ## Slash commands
 
@@ -48,7 +43,6 @@ Both carry a badge with the grand total held across all six types.
 | `/sr` or `/scrollread` | Read ALL six types at once (asks first) |
 | `/sr count` | Held counts per type, with item entry IDs |
 | `/sr bar` | Show/hide the six-button bar |
-| `/sr button` | Show/hide the on-screen master button |
 | `/sr minimap` | Show/hide the minimap button |
 | `/sr reset` | Reset all positions to defaults and show everything |
 
@@ -64,4 +58,4 @@ Both carry a badge with the grand total held across all six types.
 
 ## Saved variables
 
-`ScrollReaderDB` stores only positions and visibility (minimap button, on-screen button, bar). Delete it (or `/sr reset`) to restore defaults.
+`ScrollReaderDB` stores only positions and visibility (minimap button, bar). Delete it (or `/sr reset`) to restore defaults.
