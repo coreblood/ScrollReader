@@ -1,5 +1,9 @@
 # ScrollReader — Changelog
 
+## v1.2.3 — 2026-09-14
+
+- **Confirmation dialog removed** for all six types, by owner decision: every trigger (bar click, keybind, minimap, `/sr`) sends `SCRALL` immediately. The `SCRDONE` chat line is the receipt. Map auto-chain unchanged. Note this deliberately trades away the accidental-keypress safety net.
+
 ## v1.2.2 — 2026-09-14
 
 - **Removed the on-screen master button** (the standalone floating scroll icon). The bar covers per-type reading and the minimap button (or `/sr`) covers read-everything; the extra button was redundant. Its stale saved-variables entry is cleaned on load, and `/sr button` is gone from the slash commands.
