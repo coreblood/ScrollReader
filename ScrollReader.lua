@@ -1,0 +1,638 @@
+--[[----------------------------------------------------------------------------
+  ScrollReader v1.2.0 (WotLK 3.3.5a, Uncapped server)
+
+  Bulk reader for six scroll types via the server's mass-consume verb, driven
+  by a keybindable six-button bar plus the original master sweep buttons.
+
+  Wire (same as the Dashboard's "Use in bulk" buttons):
+    Request:  SendAddonMessage("REAGENTBANK", "SCRALL:<itemEntry>", "WHISPER", me)
+              -- server consumes EVERY bag copy of that entry in one call.
+    Reply:    "SCRDONE:<entry>:<used>:<held>" on prefix "UNC".
+              -- THREE fields. A two-field anchored match is the documented
+              -- historical dead-branch bug in UncappedScrolls; not repeated here.
+    Rejection is NOT silence on this realm: a non-whitelisted entry still gets
+    SCRDONE (used=0) plus a server-sent explanation line. The 6s watchdog only
+    covers a server build with no handler at all.
+
+  Item entries are resolved live from bag links by exact title (the four kirei
+  scrolls also carry their known entries as icon fallbacks). You can only bulk
+  what you hold, so bags are always a sufficient source of truth for the entry.
+
+  Destructive + no undo => every trigger (click OR keybind) goes through a
+  confirmation dialog quoting exact counts (suite rule; Michael chose dialog-
+  every-press).
+
+  Keybindings: Bindings.xml (auto-loaded by the client) exposes one binding per
+  scroll type under ESC > Key Bindings > ScrollReader, each calling the global
+  ScrollReader_BulkByIndex(i).
+------------------------------------------------------------------------------]]
+
+local ADDON_NAME = "ScrollReader"
+local VERSION    = "1.2.1"
+local ICON       = "Interface\\Icons\\INV_Scroll_03"
+
+local TRANSPORT_PREFIX = "REAGENTBANK"  -- client -> server
+local REPLY_PREFIX     = "UNC"          -- server -> client
+local REPLY_TIMEOUT    = 6.0
+local SEND_GAP         = 1.2            -- seconds between SCRALL sends
+
+-- The six bulk types, in bar/binding order. `entry` is a FALLBACK for icons on
+-- the four scrolls whose IDs are known from kirei's own bulk list; the live
+-- entry is always re-read from bag links before any send.
+local TYPES = {
+    { title = "Wildcard Transmog Scroll", entry = nil    },
+    { title = "Sealed Traveler's Map",    entry = nil    },
+    { title = "Scroll of Mastery",        entry = 500205 },
+    { title = "Scroll of the Delver",     entry = 500207 },
+    { title = "Scroll of Reach",          entry = 500203 },
+    { title = "Scroll of Bounty",         entry = 500204 },
+}
+
+local TITLES = {}
+for i = 1, #TYPES do TITLES[TYPES[i].title] = i end
+
+-- Key Bindings menu strings (resolved when the bindings UI opens).
+BINDING_HEADER_SCROLLREADER = "ScrollReader"
+for i = 1, #TYPES do
+    _G["BINDING_NAME_SCROLLREADER_BULK" .. i] = "Read all: " .. TYPES[i].title
+end
+
+local DEFAULTS = {
+    minimap = { hide = false, x = -69, y = -40 },
+    button  = { hide = false, point = "CENTER", relPoint = "CENTER", x = 0, y = -180 },
+    bar     = { hide = false, point = "CENTER", relPoint = "CENTER", x = 0, y = -240 },
+}
+
+local db
+local inCombat = false
+local minimapButton, screenButton
+local bar
+local barButtons = {}
+
+--------------------------------------------------------------------- helpers --
+
+local function Print(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99ScrollReader|r " .. msg)
+end
+
+local function CopyDefaults(src, dst)
+    for k, v in pairs(src) do
+        if type(v) == "table" then
+            if type(dst[k]) ~= "table" then dst[k] = {} end
+            CopyDefaults(v, dst[k])
+        elseif dst[k] == nil then
+            dst[k] = v
+        end
+    end
+end
+
+------------------------------------------------------------------- bag scan --
+
+-- Returns recs[1..#TYPES] = { title, entry, count } in TYPES order (count may
+-- be 0; entry is the live bag-link ID when held, else the known fallback), plus
+-- the grand total held across all six.
+local function ScanBags()
+    local recs = {}
+    for i = 1, #TYPES do
+        recs[i] = { title = TYPES[i].title, entry = TYPES[i].entry, count = 0 }
+    end
+    for bag = 0, 4 do
+        local slots = GetContainerNumSlots(bag) or 0
+        for slot = 1, slots do
+            local link = GetContainerItemLink(bag, slot)
+            if link then
+                local name = link:match("%[(.-)%]")
+                local idx = name and TITLES[name]
+                if idx then
+                    local entry = tonumber(link:match("item:(%d+)"))
+                    if entry then recs[idx].entry = entry end
+                    local _, stackCount = GetContainerItemInfo(bag, slot)
+                    recs[idx].count = recs[idx].count + (stackCount or 1)
+                end
+            end
+        end
+    end
+    local total = 0
+    for i = 1, #recs do total = total + recs[i].count end
+    return recs, total
+end
+
+--------------------------------------------------------------- badges/icons --
+
+local function UpdateBadges()
+    local recs, total = ScanBags()
+    local text = (total > 0) and tostring(total) or ""
+    if minimapButton and minimapButton.badge then minimapButton.badge:SetText(text) end
+    if screenButton and screenButton.badge then screenButton.badge:SetText(text) end
+    for i = 1, #barButtons do
+        local b, rec = barButtons[i], recs[i]
+        b.count = rec.count
+        b.badge:SetText(rec.count > 0 and tostring(rec.count) or "")
+        if rec.entry then
+            local tex = GetItemIcon(rec.entry)
+            if tex then b.icon:SetTexture(tex) end
+        end
+        -- Empty types read as inert; combat greys everything regardless.
+        b.icon:SetDesaturated(inCombat or rec.count == 0)
+        b:SetAlpha(inCombat and 0.5 or (rec.count == 0 and 0.7 or 1))
+    end
+    return recs, total
+end
+
+local function SetCombatState(flag)
+    inCombat = flag
+    local alpha = flag and 0.5 or 1
+    if minimapButton then
+        if minimapButton.icon then minimapButton.icon:SetDesaturated(flag) end
+        minimapButton:SetAlpha(alpha)
+    end
+    if screenButton then
+        local tex = screenButton:GetNormalTexture()
+        if tex then tex:SetDesaturated(flag) end
+        screenButton:SetAlpha(alpha)
+    end
+    UpdateBadges()
+end
+
+---------------------------------------------------------- send queue + wire --
+
+local sendQueue = {}       -- FIFO of { entry, name }
+local pendingReply = {}    -- entry -> { name = ..., elapsed = 0 } awaiting SCRDONE
+
+-- [v1.2.1] Auto-chain: maps are consumed at most 500 per SCRALL call server-
+-- side ([#1350]), so one confirmed "read all 1398" needs several calls. The
+-- confirmation covered the full count, so the addon re-sends until the BAGS
+-- are clean. Bag scan is the loop condition on purpose: SCRDONE's `held`
+-- counts bank too, and chaining on it would spin forever against bank copies
+-- SCRALL can't touch. used==0 also ends a chain (server refusal). Budget is a
+-- belt-and-braces cap, not pacing.
+local CHAIN_MAX = 40
+local chainBudget = {}     -- entry -> sends remaining in this confirmation
+local chainAgg = {}        -- entry -> { name, used, calls } for one summary line
+
+local clock = CreateFrame("Frame")
+clock.sinceSend = SEND_GAP -- first send fires immediately
+clock:SetScript("OnUpdate", function(self, elapsed)
+    if sendQueue[1] and not inCombat then   -- combat holds the queue, resumes after
+        self.sinceSend = self.sinceSend + elapsed
+        if self.sinceSend >= SEND_GAP then
+            self.sinceSend = 0
+            local job = table.remove(sendQueue, 1)
+            pendingReply[job.entry] = { name = job.name, elapsed = 0 }
+            SendAddonMessage(TRANSPORT_PREFIX, "SCRALL:" .. job.entry, "WHISPER", UnitName("player"))
+        end
+    else
+        self.sinceSend = SEND_GAP
+    end
+    for entry, w in pairs(pendingReply) do
+        w.elapsed = w.elapsed + elapsed
+        if w.elapsed > REPLY_TIMEOUT then
+            pendingReply[entry] = nil
+            Print("no server reply for " .. w.name .. " (entry " .. entry .. ") — " ..
+                  "SCRALL may not cover this scroll yet; ask kirei to whitelist entry " .. entry .. ".")
+        end
+    end
+end)
+
+local function QueueConsume(recs)
+    for i = 1, #recs do
+        local rec = recs[i]
+        if rec.count > 0 and rec.entry then
+            sendQueue[#sendQueue + 1] = { entry = rec.entry, name = rec.title }
+            chainBudget[rec.entry] = CHAIN_MAX
+            chainAgg[rec.entry] = { name = rec.title, used = 0, calls = 0 }
+        end
+    end
+end
+
+---------------------------------------------------------------- confirm/use --
+
+-- A confirmation, because this destroys items: every copy is spent in one
+-- server call with no undo. Both clicks and keybinds pass through here.
+StaticPopupDialogs["SCROLLREADER_USE_ALL"] = {
+    text = "%s",
+    button1 = ACCEPT,
+    button2 = CANCEL,
+    OnAccept = function(self, data)
+        local d = data or (self and self.data)
+        if d then QueueConsume(d) end
+    end,
+    timeout = 0, whileDead = 1, hideOnEscape = 1, showAlert = 1,
+}
+
+local function ConfirmConsume(recs)
+    local parts, mapNote = {}, ""
+    for i = 1, #recs do
+        if recs[i].count > 0 then
+            parts[#parts + 1] = "|cffffffff" .. recs[i].count .. "|r " .. recs[i].title
+            if recs[i].title == "Sealed Traveler's Map" and recs[i].count > 500 then
+                mapNote = "\n\nThe server consumes at most 500 maps per call; " ..
+                    "ScrollReader repeats the call automatically until they're gone."
+            end
+        end
+    end
+    local prompt = "Read all " .. table.concat(parts, " and ") ..
+        "?\n\nThey are consumed immediately and cannot be recovered." .. mapNote
+    StaticPopup_Show("SCROLLREADER_USE_ALL", prompt, nil, recs)
+end
+
+-- Master sweep: every held type at once, one dialog.
+local function Sweep()
+    if inCombat then
+        Print("can't read scrolls while in combat.")
+        return
+    end
+    local recs, total = ScanBags()
+    if total == 0 then
+        Print("no matching scrolls in bags.")
+        return
+    end
+    ConfirmConsume(recs)
+end
+
+-- Single type, by bar/binding index. Global: Bindings.xml calls this.
+function ScrollReader_BulkByIndex(index)
+    local t = TYPES[index]
+    if not t then return end
+    if inCombat then
+        Print("can't read scrolls while in combat.")
+        return
+    end
+    local recs = ScanBags()
+    local rec = recs[index]
+    if rec.count == 0 then
+        Print("no " .. rec.title .. " in bags.")
+        return
+    end
+    ConfirmConsume({ rec })
+end
+
+-------------------------------------------------------------- minimap button --
+
+local function CreateMinimapButton()
+    local mm = CreateFrame("Button", "ScrollReaderMinimapButton", Minimap)
+    mm:SetWidth(31)
+    mm:SetHeight(31)
+    mm:SetFrameStrata("MEDIUM")
+    mm:SetFrameLevel(8)
+    mm:RegisterForClicks("LeftButtonUp")
+    mm:RegisterForDrag("LeftButton")
+
+    -- Canonical LibDBIcon texture layout.
+    local overlay = mm:CreateTexture(nil, "OVERLAY")
+    overlay:SetWidth(53)
+    overlay:SetHeight(53)
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetPoint("TOPLEFT")
+
+    local background = mm:CreateTexture(nil, "BACKGROUND")
+    background:SetWidth(20)
+    background:SetHeight(20)
+    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    background:SetPoint("TOPLEFT", 7, -5)
+
+    local icon = mm:CreateTexture(nil, "ARTWORK")
+    icon:SetWidth(17)
+    icon:SetHeight(17)
+    icon:SetTexture(ICON)
+    icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+    icon:SetPoint("TOPLEFT", 7, -6)
+    mm.icon = icon
+
+    local badge = mm:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+    badge:SetPoint("BOTTOMRIGHT", mm, "BOTTOMRIGHT", -2, 3)
+    mm.badge = badge
+
+    local function Reposition()
+        mm:ClearAllPoints()
+        mm:SetPoint("CENTER", Minimap, "CENTER", db.minimap.x, db.minimap.y)
+    end
+    mm.Reposition = Reposition
+
+    -- Free-form drag: exact x/y offsets from Minimap center, no ring snap.
+    local function OnDragUpdate(self)
+        local mx, my = Minimap:GetCenter()
+        local px, py = GetCursorPosition()
+        local scale = Minimap:GetEffectiveScale()
+        px, py = px / scale, py / scale
+        db.minimap.x = px - mx
+        db.minimap.y = py - my
+        Reposition()
+    end
+
+    mm:SetScript("OnDragStart", function(self)
+        self:SetScript("OnUpdate", OnDragUpdate)
+    end)
+    mm:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+    end)
+    mm:SetScript("OnClick", function(self)
+        Sweep()
+    end)
+    mm:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("ScrollReader")
+        GameTooltip:AddLine("Click: read ALL scroll types at once (asks first)", 1, 1, 1)
+        GameTooltip:AddLine("Drag: move", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    mm:SetScript("OnLeave", function(self)
+        GameTooltip:Hide()
+    end)
+
+    Reposition()
+    if db.minimap.hide then mm:Hide() end
+
+    minimapButton = mm
+end
+
+------------------------------------------------------------ on-screen button --
+
+local function CreateScreenButton()
+    local btn = CreateFrame("Button", "ScrollReaderButton", UIParent)
+    btn:SetWidth(36)
+    btn:SetHeight(36)
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetMovable(true)
+    btn:SetClampedToScreen(true)
+    btn:RegisterForClicks("LeftButtonUp")
+    btn:RegisterForDrag("LeftButton")
+
+    btn:SetNormalTexture(ICON)
+    btn:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    btn:SetPushedTexture(ICON)
+    btn:GetPushedTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    btn:GetPushedTexture():SetVertexColor(0.7, 0.7, 0.7)
+    btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+    btn:GetHighlightTexture():SetBlendMode("ADD")
+
+    local badge = btn:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+    badge:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -1, 2)
+    btn.badge = badge
+
+    local function Reposition()
+        btn:ClearAllPoints()
+        btn:SetPoint(db.button.point, UIParent, db.button.relPoint, db.button.x, db.button.y)
+    end
+    btn.Reposition = Reposition
+
+    btn:SetScript("OnDragStart", function(self)
+        self:StartMoving()
+    end)
+    btn:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local point, _, relPoint, x, y = self:GetPoint(1)
+        db.button.point    = point or "CENTER"
+        db.button.relPoint = relPoint or "CENTER"
+        db.button.x        = x or 0
+        db.button.y        = y or 0
+        Reposition()
+    end)
+    btn:SetScript("OnClick", function(self)
+        Sweep()
+    end)
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("ScrollReader")
+        GameTooltip:AddLine("Click: read ALL scroll types at once (asks first)", 1, 1, 1)
+        GameTooltip:AddLine("Drag: move", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function(self)
+        GameTooltip:Hide()
+    end)
+
+    Reposition()
+    if db.button.hide then btn:Hide() end
+
+    screenButton = btn
+end
+
+-------------------------------------------------------------------- the bar --
+
+local BTN_SIZE, BTN_GAP, BAR_PAD = 30, 4, 8
+
+local function CreateBar()
+    bar = CreateFrame("Frame", "ScrollReaderBar", UIParent)
+    bar:SetWidth(BAR_PAD * 2 + BTN_SIZE * #TYPES + BTN_GAP * (#TYPES - 1))
+    bar:SetHeight(BTN_SIZE + 12)
+    bar:SetFrameStrata("MEDIUM")
+    bar:SetMovable(true)
+    bar:SetClampedToScreen(true)
+    bar:EnableMouse(true)
+    bar:RegisterForDrag("LeftButton")
+    bar:SetBackdrop({
+        bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    bar:SetBackdropColor(0, 0, 0, 0.6)
+
+    local function Reposition()
+        bar:ClearAllPoints()
+        bar:SetPoint(db.bar.point, UIParent, db.bar.relPoint, db.bar.x, db.bar.y)
+    end
+    bar.Reposition = Reposition
+
+    local function SavePosition()
+        local point, _, relPoint, x, y = bar:GetPoint(1)
+        db.bar.point    = point or "CENTER"
+        db.bar.relPoint = relPoint or "CENTER"
+        db.bar.x        = x or 0
+        db.bar.y        = y or 0
+        Reposition()
+    end
+
+    bar:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    bar:SetScript("OnDragStop", function(self) self:StopMovingOrSizing(); SavePosition() end)
+
+    for i = 1, #TYPES do
+        local b = CreateFrame("Button", "ScrollReaderBarButton" .. i, bar)
+        b:SetWidth(BTN_SIZE)
+        b:SetHeight(BTN_SIZE)
+        b:SetPoint("LEFT", bar, "LEFT", BAR_PAD + (i - 1) * (BTN_SIZE + BTN_GAP), 0)
+        b:RegisterForClicks("LeftButtonUp")
+        b:RegisterForDrag("LeftButton")
+        b.index = i
+
+        local icon = b:CreateTexture(nil, "ARTWORK")
+        icon:SetAllPoints()
+        icon:SetTexture(ICON)
+        icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        b.icon = icon
+
+        b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+        b:GetHighlightTexture():SetBlendMode("ADD")
+
+        local badge = b:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+        badge:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -1, 2)
+        b.badge = badge
+
+        -- Dragging a button moves the whole bar (the bar edge is thin).
+        b:SetScript("OnDragStart", function() bar:StartMoving() end)
+        b:SetScript("OnDragStop", function() bar:StopMovingOrSizing(); SavePosition() end)
+
+        b:SetScript("OnClick", function(self)
+            ScrollReader_BulkByIndex(self.index)
+        end)
+        b:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:AddLine(TYPES[self.index].title)
+            GameTooltip:AddLine("Held: " .. (self.count or 0), 1, 1, 1)
+            local key = GetBindingKey("SCROLLREADER_BULK" .. self.index)
+            if key then
+                GameTooltip:AddLine("Bound to: " .. key, 1, 1, 1)
+            else
+                GameTooltip:AddLine("Bind a key: ESC > Key Bindings > ScrollReader", 0.7, 0.7, 0.7)
+            end
+            GameTooltip:AddLine("Click or keybind: read all of these (asks first)", 1, 1, 1)
+            GameTooltip:AddLine("Drag: move bar", 0.7, 0.7, 0.7)
+            GameTooltip:Show()
+        end)
+        b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        barButtons[i] = b
+    end
+
+    Reposition()
+    if db.bar.hide then bar:Hide() end
+end
+
+----------------------------------------------------------------------- slash --
+
+local function ToggleFrame(which, frameRef)
+    if not frameRef then return end
+    db[which].hide = not db[which].hide
+    if db[which].hide then frameRef:Hide() else frameRef:Show() end
+end
+
+local function ResetPositions()
+    for _, which in ipairs({ "minimap", "button", "bar" }) do
+        db[which] = nil
+    end
+    CopyDefaults(DEFAULTS, db)
+    if minimapButton then minimapButton.Reposition(); minimapButton:Show() end
+    if screenButton then screenButton.Reposition(); screenButton:Show() end
+    if bar then bar.Reposition(); bar:Show() end
+end
+
+local function PrintCounts()
+    local recs, total = ScanBags()
+    if total == 0 then
+        Print("no matching scrolls in bags.")
+        return
+    end
+    local parts = {}
+    for i = 1, #recs do
+        if recs[i].count > 0 then
+            parts[#parts + 1] = recs[i].title .. " x" .. recs[i].count ..
+                (recs[i].entry and (" (entry " .. recs[i].entry .. ")") or "")
+        end
+    end
+    Print("holding " .. total .. " — " .. table.concat(parts, ", ") .. ".")
+end
+
+SLASH_SCROLLREADER1 = "/scrollread"
+SLASH_SCROLLREADER2 = "/sr"
+SlashCmdList["SCROLLREADER"] = function(msg)
+    msg = (msg or ""):match("^%s*(.-)%s*$"):lower()
+    if msg == "" then
+        Sweep()
+    elseif msg == "count" then
+        PrintCounts()
+    elseif msg == "bar" then
+        ToggleFrame("bar", bar)
+    elseif msg == "button" then
+        ToggleFrame("button", screenButton)
+    elseif msg == "minimap" then
+        ToggleFrame("minimap", minimapButton)
+    elseif msg == "reset" then
+        ResetPositions()
+    else
+        Print("commands: /sr (read all), /sr count, /sr bar, /sr button, /sr minimap, /sr reset")
+    end
+end
+
+---------------------------------------------------------------------- events --
+
+local f = CreateFrame("Frame")
+f:RegisterEvent("ADDON_LOADED")
+f:RegisterEvent("PLAYER_LOGIN")
+f:RegisterEvent("PLAYER_REGEN_DISABLED")
+f:RegisterEvent("PLAYER_REGEN_ENABLED")
+f:RegisterEvent("BAG_UPDATE")
+f:RegisterEvent("CHAT_MSG_ADDON")
+f:SetScript("OnEvent", function(self, event, a1, a2)
+    if event == "CHAT_MSG_ADDON" then
+        if a1 ~= REPLY_PREFIX or not a2 then return end
+        -- SCRDONE:<entry>:<used>:<held> — three fields, always.
+        local entry, used, held = a2:match("^SCRDONE:(%d+):(%d+):(%d+)$")
+        if not entry then return end
+        entry = tonumber(entry)
+        local w = pendingReply[entry]
+        pendingReply[entry] = nil
+        UpdateBadges()
+        if not w then return end            -- not ours (e.g. a Dashboard bulk button)
+        used, held = tonumber(used) or 0, tonumber(held) or 0
+        local agg = chainAgg[entry]
+        if agg then
+            agg.used  = agg.used + used
+            agg.calls = agg.calls + 1
+        end
+        -- Chain while the server is still spending AND our bags still hold the
+        -- type (bag scan, not `held` — see the chain comment above).
+        if used > 0 and (chainBudget[entry] or 0) > 0 then
+            local recs = ScanBags()
+            for i = 1, #recs do
+                if recs[i].title == w.name and recs[i].count > 0 then
+                    chainBudget[entry] = chainBudget[entry] - 1
+                    sendQueue[#sendQueue + 1] = { entry = entry, name = w.name }
+                    return   -- summary comes when the chain finishes
+                end
+            end
+        end
+        -- Chain finished (or was never needed).
+        local totalUsed = agg and agg.used or used
+        local calls     = agg and agg.calls or 1
+        chainBudget[entry], chainAgg[entry] = nil, nil
+        -- The Dashboard's UncappedScrolls prints its own "[Scrolls]" line for
+        -- every SCRDONE it sees; when it's loaded, ours would be a duplicate.
+        if _G.UncappedScrolls then return end
+        if totalUsed > 0 then
+            Print("read " .. totalUsed .. " " .. w.name ..
+                  (calls > 1 and (" over " .. calls .. " calls") or "") .. "." ..
+                  (held > 0 and (" " .. held .. " left.") or " None left."))
+        elseif held > 0 then
+            Print("none of your " .. held .. " " .. w.name .. " could be used.")
+        else
+            Print("nothing to read — no " .. w.name .. " left in your bags.")
+        end
+        return
+    end
+
+    if event == "BAG_UPDATE" then
+        if minimapButton or screenButton or bar then UpdateBadges() end
+        return
+    end
+
+    if event == "ADDON_LOADED" and a1 == ADDON_NAME then
+        ScrollReaderDB = ScrollReaderDB or {}
+        db = ScrollReaderDB
+        CopyDefaults(DEFAULTS, db)
+        CreateMinimapButton()
+        CreateScreenButton()
+        CreateBar()
+        self:UnregisterEvent("ADDON_LOADED")
+    elseif event == "PLAYER_LOGIN" then
+        Print("v" .. VERSION .. " loaded — /sr to read scrolls, bar keybinds in ESC > Key Bindings.")
+        UpdateBadges()
+        if UnitAffectingCombat("player") then
+            SetCombatState(true)
+        end
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        SetCombatState(true)
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        SetCombatState(false)
+    end
+end)
