@@ -28,7 +28,7 @@
 ------------------------------------------------------------------------------]]
 
 local ADDON_NAME = "ScrollReader"
-local VERSION    = "1.2.1"
+local VERSION    = "1.2.2"
 local ICON       = "Interface\\Icons\\INV_Scroll_03"
 
 local TRANSPORT_PREFIX = "REAGENTBANK"  -- client -> server
@@ -59,13 +59,12 @@ end
 
 local DEFAULTS = {
     minimap = { hide = false, x = -69, y = -40 },
-    button  = { hide = false, point = "CENTER", relPoint = "CENTER", x = 0, y = -180 },
     bar     = { hide = false, point = "CENTER", relPoint = "CENTER", x = 0, y = -240 },
 }
 
 local db
 local inCombat = false
-local minimapButton, screenButton
+local minimapButton
 local bar
 local barButtons = {}
 
@@ -123,7 +122,6 @@ local function UpdateBadges()
     local recs, total = ScanBags()
     local text = (total > 0) and tostring(total) or ""
     if minimapButton and minimapButton.badge then minimapButton.badge:SetText(text) end
-    if screenButton and screenButton.badge then screenButton.badge:SetText(text) end
     for i = 1, #barButtons do
         local b, rec = barButtons[i], recs[i]
         b.count = rec.count
@@ -145,11 +143,6 @@ local function SetCombatState(flag)
     if minimapButton then
         if minimapButton.icon then minimapButton.icon:SetDesaturated(flag) end
         minimapButton:SetAlpha(alpha)
-    end
-    if screenButton then
-        local tex = screenButton:GetNormalTexture()
-        if tex then tex:SetDesaturated(flag) end
-        screenButton:SetAlpha(alpha)
     end
     UpdateBadges()
 end
@@ -346,68 +339,6 @@ local function CreateMinimapButton()
     minimapButton = mm
 end
 
------------------------------------------------------------- on-screen button --
-
-local function CreateScreenButton()
-    local btn = CreateFrame("Button", "ScrollReaderButton", UIParent)
-    btn:SetWidth(36)
-    btn:SetHeight(36)
-    btn:SetFrameStrata("MEDIUM")
-    btn:SetMovable(true)
-    btn:SetClampedToScreen(true)
-    btn:RegisterForClicks("LeftButtonUp")
-    btn:RegisterForDrag("LeftButton")
-
-    btn:SetNormalTexture(ICON)
-    btn:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    btn:SetPushedTexture(ICON)
-    btn:GetPushedTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    btn:GetPushedTexture():SetVertexColor(0.7, 0.7, 0.7)
-    btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
-    btn:GetHighlightTexture():SetBlendMode("ADD")
-
-    local badge = btn:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
-    badge:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -1, 2)
-    btn.badge = badge
-
-    local function Reposition()
-        btn:ClearAllPoints()
-        btn:SetPoint(db.button.point, UIParent, db.button.relPoint, db.button.x, db.button.y)
-    end
-    btn.Reposition = Reposition
-
-    btn:SetScript("OnDragStart", function(self)
-        self:StartMoving()
-    end)
-    btn:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        local point, _, relPoint, x, y = self:GetPoint(1)
-        db.button.point    = point or "CENTER"
-        db.button.relPoint = relPoint or "CENTER"
-        db.button.x        = x or 0
-        db.button.y        = y or 0
-        Reposition()
-    end)
-    btn:SetScript("OnClick", function(self)
-        Sweep()
-    end)
-    btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("ScrollReader")
-        GameTooltip:AddLine("Click: read ALL scroll types at once (asks first)", 1, 1, 1)
-        GameTooltip:AddLine("Drag: move", 1, 1, 1)
-        GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function(self)
-        GameTooltip:Hide()
-    end)
-
-    Reposition()
-    if db.button.hide then btn:Hide() end
-
-    screenButton = btn
-end
-
 -------------------------------------------------------------------- the bar --
 
 local BTN_SIZE, BTN_GAP, BAR_PAD = 30, 4, 8
@@ -508,12 +439,11 @@ local function ToggleFrame(which, frameRef)
 end
 
 local function ResetPositions()
-    for _, which in ipairs({ "minimap", "button", "bar" }) do
+    for _, which in ipairs({ "minimap", "bar" }) do
         db[which] = nil
     end
     CopyDefaults(DEFAULTS, db)
     if minimapButton then minimapButton.Reposition(); minimapButton:Show() end
-    if screenButton then screenButton.Reposition(); screenButton:Show() end
     if bar then bar.Reposition(); bar:Show() end
 end
 
@@ -543,14 +473,12 @@ SlashCmdList["SCROLLREADER"] = function(msg)
         PrintCounts()
     elseif msg == "bar" then
         ToggleFrame("bar", bar)
-    elseif msg == "button" then
-        ToggleFrame("button", screenButton)
     elseif msg == "minimap" then
         ToggleFrame("minimap", minimapButton)
     elseif msg == "reset" then
         ResetPositions()
     else
-        Print("commands: /sr (read all), /sr count, /sr bar, /sr button, /sr minimap, /sr reset")
+        Print("commands: /sr (read all), /sr count, /sr bar, /sr minimap, /sr reset")
     end
 end
 
@@ -612,7 +540,7 @@ f:SetScript("OnEvent", function(self, event, a1, a2)
     end
 
     if event == "BAG_UPDATE" then
-        if minimapButton or screenButton or bar then UpdateBadges() end
+        if minimapButton or bar then UpdateBadges() end
         return
     end
 
@@ -620,8 +548,8 @@ f:SetScript("OnEvent", function(self, event, a1, a2)
         ScrollReaderDB = ScrollReaderDB or {}
         db = ScrollReaderDB
         CopyDefaults(DEFAULTS, db)
+        db.button = nil   -- v1.2.2: on-screen master button removed
         CreateMinimapButton()
-        CreateScreenButton()
         CreateBar()
         self:UnregisterEvent("ADDON_LOADED")
     elseif event == "PLAYER_LOGIN" then
