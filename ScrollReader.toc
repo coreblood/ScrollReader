@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: ScrollReader
+## Notes: Keybindable bulk reader for Uncapped scrolls — six types, one press each.
+## Author: Mhortai
+## Version: 1.2.1
+## SavedVariables: ScrollReaderDB
+
+ScrollReader.lua
