@@ -18,9 +18,9 @@
   scrolls also carry their known entries as icon fallbacks). You can only bulk
   what you hold, so bags are always a sufficient source of truth for the entry.
 
-  Destructive + no undo => every trigger (click OR keybind) goes through a
-  confirmation dialog quoting exact counts (suite rule; Michael chose dialog-
-  every-press).
+  v1.2.3: NO confirmation dialog, by explicit owner decision (overrides the
+  suite's confirm-destructive default for this addon) — every trigger sends
+  immediately; the SCRDONE chat line is the receipt.
 
   Keybindings: Bindings.xml (auto-loaded by the client) exposes one binding per
   scroll type under ESC > Key Bindings > ScrollReader, each calling the global
@@ -28,7 +28,7 @@
 ------------------------------------------------------------------------------]]
 
 local ADDON_NAME = "ScrollReader"
-local VERSION    = "1.2.2"
+local VERSION    = "1.2.3"
 local ICON       = "Interface\\Icons\\INV_Scroll_03"
 
 local TRANSPORT_PREFIX = "REAGENTBANK"  -- client -> server
@@ -200,34 +200,6 @@ end
 
 ---------------------------------------------------------------- confirm/use --
 
--- A confirmation, because this destroys items: every copy is spent in one
--- server call with no undo. Both clicks and keybinds pass through here.
-StaticPopupDialogs["SCROLLREADER_USE_ALL"] = {
-    text = "%s",
-    button1 = ACCEPT,
-    button2 = CANCEL,
-    OnAccept = function(self, data)
-        local d = data or (self and self.data)
-        if d then QueueConsume(d) end
-    end,
-    timeout = 0, whileDead = 1, hideOnEscape = 1, showAlert = 1,
-}
-
-local function ConfirmConsume(recs)
-    local parts, mapNote = {}, ""
-    for i = 1, #recs do
-        if recs[i].count > 0 then
-            parts[#parts + 1] = "|cffffffff" .. recs[i].count .. "|r " .. recs[i].title
-            if recs[i].title == "Sealed Traveler's Map" and recs[i].count > 500 then
-                mapNote = "\n\nThe server consumes at most 500 maps per call; " ..
-                    "ScrollReader repeats the call automatically until they're gone."
-            end
-        end
-    end
-    local prompt = "Read all " .. table.concat(parts, " and ") ..
-        "?\n\nThey are consumed immediately and cannot be recovered." .. mapNote
-    StaticPopup_Show("SCROLLREADER_USE_ALL", prompt, nil, recs)
-end
 
 -- Master sweep: every held type at once, one dialog.
 local function Sweep()
@@ -240,7 +212,7 @@ local function Sweep()
         Print("no matching scrolls in bags.")
         return
     end
-    ConfirmConsume(recs)
+    QueueConsume(recs)
 end
 
 -- Single type, by bar/binding index. Global: Bindings.xml calls this.
@@ -257,7 +229,7 @@ function ScrollReader_BulkByIndex(index)
         Print("no " .. rec.title .. " in bags.")
         return
     end
-    ConfirmConsume({ rec })
+    QueueConsume({ rec })
 end
 
 -------------------------------------------------------------- minimap button --
@@ -325,7 +297,7 @@ local function CreateMinimapButton()
     mm:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("ScrollReader")
-        GameTooltip:AddLine("Click: read ALL scroll types at once (asks first)", 1, 1, 1)
+        GameTooltip:AddLine("Click: read ALL scroll types at once", 1, 1, 1)
         GameTooltip:AddLine("Drag: move", 1, 1, 1)
         GameTooltip:Show()
     end)
@@ -417,7 +389,7 @@ local function CreateBar()
             else
                 GameTooltip:AddLine("Bind a key: ESC > Key Bindings > ScrollReader", 0.7, 0.7, 0.7)
             end
-            GameTooltip:AddLine("Click or keybind: read all of these (asks first)", 1, 1, 1)
+            GameTooltip:AddLine("Click or keybind: read all of these", 1, 1, 1)
             GameTooltip:AddLine("Drag: move bar", 0.7, 0.7, 0.7)
             GameTooltip:Show()
         end)
