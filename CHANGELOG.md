@@ -1,5 +1,9 @@
 # ScrollReader — Changelog
 
+## v1.2.2 — 2026-09-14
+
+- **Removed the on-screen master button** (the standalone floating scroll icon). The bar covers per-type reading and the minimap button (or `/sr`) covers read-everything; the extra button was redundant. Its stale saved-variables entry is cleaned on load, and `/sr button` is gone from the slash commands.
+
 ## v1.2.1 — 2026-09-14
 
 Server landed bulk support for both custom scrolls (Wildcard Transmog Scroll = 500201, Sealed Traveler's Map = 500200, per Dashboard [#1350]/[#1360]); this patch adapts to the maps' server rules.
